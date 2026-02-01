@@ -76,7 +76,7 @@ LeaderboardManager.prototype.submitScore = function (name, score, turns, gameSta
   }
   this.recentSubmissions[name].push(Date.now());
 
-  fetch(this.scriptUrl, {
+  request = fetch(this.scriptUrl, {
     method: 'POST',
     mode: 'no-cors', // Required for Google Apps Script
     headers: {
@@ -94,7 +94,7 @@ LeaderboardManager.prototype.submitScore = function (name, score, turns, gameSta
     })
   })
     .then(function () {
-
+      console.log(request.response);
       // no-cors means we can't read the response
       // If it doesn't throw an error, we assume it worked
       if (callback) callback(null, { status: 'success' });
