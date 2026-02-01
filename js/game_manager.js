@@ -325,111 +325,117 @@ GameManager.prototype.positionsEqual = function (first, second) {
 };
 
 // Simulate random moves until a target score is reached or safety limit hit
-GameManager.prototype.simulateToScore = function (targetScore, options) {
-  var self = this;
-  targetScore = Number(targetScore) || 0;
-  var maxMoves = (options && options.maxMoves) || 10000;
-  var moves = 0;
+// Add near the top of GameManager (or inside simulateToScore)
+GameManager.prototype.removeRandomLowTiles = function (count = 1) {
+  const candidates = [];
+  
+  this.grid.eachCell((x, y, tile) => {
+    if (tile && tile.value <= 16) {   // only touch small tiles
+      candidates.push({x, y, tile});
+    }
+  });
 
+  if (candidates.length === 0) return false;
+
+  // Shuffle and take up to `count`
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+
+  const removed = Math.min(count, candidates.length);
+  
+  for (let i = 0; i < removed; i++) {
+    const {x, y} = candidates[i];
+    this.grid.removeTile(this.grid.cellContent({x, y}));
+  }
+
+  console.log(`[rescue] Removed ${removed} small tile(s) to escape deadlock`);
+  return removed > 0;
+};
+
+// ────────────────────────────────────────────────
+
+GameManager.prototype.simulateToScore = function (targetScore, options = {}) {
+  const self = this;
+  targetScore = Number(targetScore) || 0;
+  
   if (targetScore <= this.score) return;
 
-  var dirs = [0, 1, 2, 3];
+  const maxMoves        = options.maxMoves        ?? 25000;
+  const maxRescues      = options.maxRescues      ?? 6;       // how many times we allow rescue
+  const tilesToRemove   = options.tilesToRemove   ?? 2;       // how many tiles per rescue
+  const rescueAfterStuckCount = options.rescueAfterStuckCount ?? 3;  // require N consecutive no-move before rescue
 
-  // Simulate a single move on a cloned grid and return score gain and moved flag
-  var simulateMoveOnGrid = function (grid, direction) {
-    var vector = self.getVector(direction);
-    var traversals = self.buildTraversals(vector);
-    var moved = false;
-    var scoreGain = 0;
+  let moves = 0;
+  let rescuesUsed = 0;
+  let consecutiveNoMove = 0;
 
-    // Prepare tiles: clear mergedFrom and ensure positions are saved
-    grid.eachCell(function (x, y, tile) {
-      if (tile) {
-        tile.mergedFrom = null;
-        tile.savePosition && tile.savePosition();
-      }
-    });
+  const dirs = [0, 1, 2, 3];
 
-    traversals.x.forEach(function (x) {
-      traversals.y.forEach(function (y) {
-        var cell = { x: x, y: y };
-        var tile = grid.cellContent(cell);
-
-        if (tile) {
-          // find farthest
-          var previous;
-          var nextCell = cell;
-          do {
-            previous = nextCell;
-            nextCell = { x: previous.x + vector.x, y: previous.y + vector.y };
-          } while (grid.withinBounds(nextCell) && grid.cellAvailable(nextCell));
-
-          var positions = { farthest: previous, next: nextCell };
-          var next = grid.cellContent(positions.next);
-
-          if (next && next.value === tile.value && !next.mergedFrom) {
-            var merged = new Tile(positions.next, tile.value * 2);
-            merged.mergedFrom = [tile, next];
-
-            grid.insertTile(merged);
-            grid.removeTile(tile);
-
-            tile.updatePosition && tile.updatePosition(positions.next);
-
-            scoreGain += merged.value;
-          } else {
-            // move tile to farthest
-            grid.removeTile(tile);
-            tile.x = positions.farthest.x; tile.y = positions.farthest.y;
-            grid.insertTile(tile);
-          }
-
-          if (!(cell.x === tile.x && cell.y === tile.y)) {
-            moved = true;
-          }
-        }
-      });
-    });
-
-    return { moved: moved, scoreGain: scoreGain, grid: grid };
+  const simulateMoveOnGrid = function (grid, direction) {
+    // ── same implementation as you had ──
+    // (I'm omitting it here for brevity — keep your version)
+    // returns { moved: boolean, scoreGain: number, grid: Grid }
   };
 
-  var step = function () {
+  const step = function () {
     if (self.score >= targetScore || self.over || moves >= maxMoves) {
-      console.log('Simulation finished. score=', self.score, 'moves=', moves);
+      console.log(`Simulation finished. score=${self.score}  moves=${moves}  rescues=${rescuesUsed}`);
       return;
     }
 
-    // Evaluate each direction by simulating on a cloned grid and choose best immediate score gain
-    var best = { dir: -1, gain: -1, moved: false };
-    for (var i = 0; i < dirs.length; i++) {
-      var d = dirs[i];
-      // Clone current grid
-      var cloned = new Grid(self.size, self.grid.serialize().cells);
-      var out = simulateMoveOnGrid(cloned, d);
-      if (out.moved) {
-        if (out.scoreGain > best.gain || (out.scoreGain === best.gain && out.moved && !best.moved)) {
+    // ── Try to find best move ───────────────────────────────────
+    let best = { dir: -1, gain: -1, moved: false };
+
+    for (let d of dirs) {
+      const cloned = new Grid(self.size, self.grid.serialize().cells);
+      const out = simulateMoveOnGrid(cloned, d);
+      if (out.moved && out.scoreGain >= 0) {
+        if (out.scoreGain > best.gain || 
+            (out.scoreGain === best.gain && out.moved && !best.moved)) {
           best = { dir: d, gain: out.scoreGain, moved: out.moved };
         }
       }
     }
 
-    // If no move results in movement, stop
-    if (best.dir === -1) {
-      console.log('No valid moves available. Ending simulation.');
-      return;
-    }
+    let didMove = false;
 
-    // Apply the best move to the real game
-    try {
+    if (best.dir !== -1) {
+      // Normal move
       self.move(best.dir);
-    } catch (e) {
-      console.log('Error applying move', e);
+      didMove = true;
+      consecutiveNoMove = 0;
+    } 
+    else {
+      // No move possible — deadlock
+      consecutiveNoMove++;
+
+      if (consecutiveNoMove >= rescueAfterStuckCount && rescuesUsed < maxRescues) {
+        const rescued = self.removeRandomLowTiles(tilesToRemove);
+        if (rescued) {
+          rescuesUsed++;
+          consecutiveNoMove = 0;   // reset counter
+          self.actuate();          // update UI
+          console.log(`Rescue #${rescuesUsed}/${maxRescues} — continuing...`);
+        } else {
+          console.log("No low-value tiles left to remove → giving up");
+          return;
+        }
+      } 
+      else if (consecutiveNoMove >= rescueAfterStuckCount) {
+        console.log("Max rescues reached or no more rescue possible → stopping");
+        return;
+      } 
+      else {
+        console.log(`No move (stuck counter = ${consecutiveNoMove}/${rescueAfterStuckCount})`);
+      }
     }
 
-    moves++;
-    // slight delay so UI updates remain smooth
-    setTimeout(step, 0);
+    if (didMove || rescuesUsed > 0) {   // still try to continue after rescue
+      moves++;
+      setTimeout(step, 0);   // or 1–8 ms if you want slower animation
+    }
   };
 
   step();
