@@ -584,7 +584,7 @@ GameManager.prototype.simulateToScore = function (targetScore) {
   var self = this;
   var maxMoves = 20000; // Safety limit
   var moveCount = 0;
-  var moveDelay = 50; // Delay between moves in milliseconds for visualization
+  var moveDelay = 10; // Delay between moves in milliseconds for visualization
   
   console.log('🎮 Starting AI simulation to reach score:', targetScore);
   console.log('📊 Current score:', this.score);
