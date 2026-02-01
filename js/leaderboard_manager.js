@@ -100,6 +100,7 @@ LeaderboardManager.prototype.submitScore = function (name, score, turns, gameSta
       if (callback) callback(null, { status: 'success' });
     })
     .catch(function (error) {
+      console.log(request.response);
       if (callback) callback(error, null);
     });
 };
