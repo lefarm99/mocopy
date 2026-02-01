@@ -94,13 +94,13 @@ LeaderboardManager.prototype.submitScore = function (name, score, turns, gameSta
     })
   })
     .then(function () {
-      console.log(request.response);
+      console.log(request.response.json);
       // no-cors means we can't read the response
       // If it doesn't throw an error, we assume it worked
       if (callback) callback(null, { status: 'success' });
     })
     .catch(function (error) {
-      console.log(request.response);
+      console.log(request.response.json);
       if (callback) callback(error, null);
     });
 };

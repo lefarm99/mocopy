@@ -320,132 +320,326 @@ GameManager.prototype.tileMatchesAvailable = function () {
   return false;
 };
 
-
-
-// Simulate random moves until a target score is reached or safety limit hit
-// Add near the top of GameManager (or inside simulateToScore)
-
 GameManager.prototype.positionsEqual = function (first, second) {
   return first.x === second.x && first.y === second.y;
 };
-// ────────────────────────────────────────────────
 
-// Add/replace inside GameManager
+// ════════════════════════════════════════════════════════════════════════════
+// AI SIMULATION FUNCTIONS
+// ════════════════════════════════════════════════════════════════════════════
 
-// Replace / add this new function in GameManager
-// (remove / comment out any previous simulateToScore)
-
-GameManager.prototype.simulateToScore = function (targetScore) {
-  if (this.isGameTerminated()) {
-    console.warn("Cannot simulate: game is already over");
-    return;
-  }
-
-  if (this.score >= targetScore) {
-    console.log(`Score already sufficient: ${this.score} ≥ ${targetScore}`);
-    return;
-  }
-
-  console.log(`Fast safe simulation → target ≥ ${targetScore}  (current ${this.score})`);
-
-  const MAX_MOVES = 80000;           // hard safety (should never hit)
-  let moves = 0;
-
-  // Very strong simple pattern for 2048: up > left > right > down
-  const dirPriority = [0, 3, 1, 2];   // 0=up, 3=left, 1=right, 2=down
-
-  const step = () => {
-    // Stop conditions
-    if (this.score >= targetScore) {
-      console.log(`SUCCESS — reached ${this.score} after ${moves} moves`);
-      return;
-    }
-
-    if (moves >= MAX_MOVES) {
-      console.warn(`Stopped: max moves reached. Score = ${this.score}`);
-      return;
-    }
-
-    moves++;
-
-    // ── Phase 1: try to make a useful move ────────────────────────────────
-    let didMerge = false;
-    const scoreBefore = this.score;
-
-    for (let dir of dirPriority) {
-      this.move(dir);
-      if (this.score > scoreBefore) {
-        didMerge = true;
-        break;
-      }
-    }
-
-    // If no merge → accept any non-losing move
-    if (!didMerge) {
-      for (let dir of dirPriority) {
-        const beforeOver = this.over;
-        this.move(dir);
-        if (!this.over && !this.isGameTerminated()) {
-          break;
-        }
-        this.over = beforeOver; // rollback worst case (rare)
-      }
-    }
-
-    // ── Phase 2: emergency clear to guarantee we never fill up ─────────────
-    this.preventBoardFill();
-
-    // Continue as fast as possible
-    setTimeout(step, 0);
-    // For slower / watchable version use: setTimeout(step, 8);   // ~120 fps
-  };
-
-  setTimeout(step, 0);
+// Evaluate the current board state using heuristics
+GameManager.prototype.evaluateBoard = function () {
+  var emptyCells = this.grid.availableCells().length;
+  var smoothness = this.calculateSmoothness();
+  var monotonicity = this.calculateMonotonicity();
+  var maxValue = this.getMaxTileValue();
+  var cornerBonus = this.calculateCornerBonus();
+  
+  // Weighted heuristic combination
+  return (
+    emptyCells * 2.7 +
+    smoothness * 0.1 +
+    monotonicity * 1.0 +
+    Math.log(maxValue) * 1.0 +
+    cornerBonus * 0.5
+  );
 };
 
-
-// Helper: keep at least ~4–6 empty cells at all times by removing blocking tiles
-GameManager.prototype.preventBoardFill = function () {
-  const minEmpty = 5;               // tune: 4–8 works well
-  let emptyCount = this.grid.availableCells().length;
-
-  if (emptyCount >= minEmpty) return;
-
-  // Remove tiles from highest-risk positions first (right column + bottom row)
-  const dangerousCells = [];
-
-  // Right column
-  const right = this.size - 1;
-  for (let y = 0; y < this.size; y++) {
-    dangerousCells.push({x: right, y});
-  }
-
-  // Bottom row (except the bottom-right corner already included)
-  const bottom = this.size - 1;
-  for (let x = 0; x < right; x++) {
-    dangerousCells.push({x, y: bottom});
-  }
-
-  // Shuffle a bit so we don't always clear the same spots
-  dangerousCells.sort(() => Math.random() - 0.5);
-
-  let toRemove = minEmpty - emptyCount + 1;   // remove a few extra for safety
-
-  for (let cell of dangerousCells) {
-    if (toRemove <= 0) break;
-    const tile = this.grid.cellContent(cell);
-    if (tile) {
-      this.grid.removeTile(tile);
-      toRemove--;
-      emptyCount++;
+// Calculate smoothness (prefer tiles of similar values next to each other)
+GameManager.prototype.calculateSmoothness = function () {
+  var smoothness = 0;
+  var self = this;
+  
+  for (var x = 0; x < this.size; x++) {
+    for (var y = 0; y < this.size; y++) {
+      var tile = this.grid.cellContent({ x: x, y: y });
+      if (tile) {
+        var value = Math.log(tile.value) / Math.log(2);
+        
+        // Check right neighbor
+        if (x < this.size - 1) {
+          var rightTile = this.grid.cellContent({ x: x + 1, y: y });
+          if (rightTile) {
+            var rightValue = Math.log(rightTile.value) / Math.log(2);
+            smoothness -= Math.abs(value - rightValue);
+          }
+        }
+        
+        // Check down neighbor
+        if (y < this.size - 1) {
+          var downTile = this.grid.cellContent({ x: x, y: y + 1 });
+          if (downTile) {
+            var downValue = Math.log(downTile.value) / Math.log(2);
+            smoothness -= Math.abs(value - downValue);
+          }
+        }
+      }
     }
   }
+  
+  return smoothness;
+};
 
-  // After forced removals → spawn new tiles (like normal game)
-  while (this.grid.cellsAvailable() && Math.random() < 0.7) {   // spawn 0–2 tiles
+// Calculate monotonicity (prefer increasing/decreasing sequences)
+GameManager.prototype.calculateMonotonicity = function () {
+  var totals = [0, 0, 0, 0]; // up, right, down, left
+  
+  // Check columns (up/down)
+  for (var x = 0; x < this.size; x++) {
+    var current = 0;
+    var next = current + 1;
+    while (next < this.size) {
+      while (next < this.size && !this.grid.cellContent({ x: x, y: next })) {
+        next++;
+      }
+      if (next >= this.size) break;
+      
+      var currentTile = this.grid.cellContent({ x: x, y: current });
+      var nextTile = this.grid.cellContent({ x: x, y: next });
+      
+      if (currentTile && nextTile) {
+        var currentValue = Math.log(currentTile.value) / Math.log(2);
+        var nextValue = Math.log(nextTile.value) / Math.log(2);
+        
+        if (currentValue > nextValue) {
+          totals[0] += nextValue - currentValue;
+        } else if (nextValue > currentValue) {
+          totals[2] += currentValue - nextValue;
+        }
+      }
+      
+      current = next;
+      next++;
+    }
+  }
+  
+  // Check rows (left/right)
+  for (var y = 0; y < this.size; y++) {
+    var current = 0;
+    var next = current + 1;
+    while (next < this.size) {
+      while (next < this.size && !this.grid.cellContent({ x: next, y: y })) {
+        next++;
+      }
+      if (next >= this.size) break;
+      
+      var currentTile = this.grid.cellContent({ x: current, y: y });
+      var nextTile = this.grid.cellContent({ x: next, y: y });
+      
+      if (currentTile && nextTile) {
+        var currentValue = Math.log(currentTile.value) / Math.log(2);
+        var nextValue = Math.log(nextTile.value) / Math.log(2);
+        
+        if (currentValue > nextValue) {
+          totals[1] += nextValue - currentValue;
+        } else if (nextValue > currentValue) {
+          totals[3] += currentValue - nextValue;
+        }
+      }
+      
+      current = next;
+      next++;
+    }
+  }
+  
+  return Math.max(totals[0], totals[2]) + Math.max(totals[1], totals[3]);
+};
+
+// Get maximum tile value on the board
+GameManager.prototype.getMaxTileValue = function () {
+  var max = 0;
+  for (var x = 0; x < this.size; x++) {
+    for (var y = 0; y < this.size; y++) {
+      var tile = this.grid.cellContent({ x: x, y: y });
+      if (tile && tile.value > max) {
+        max = tile.value;
+      }
+    }
+  }
+  return max;
+};
+
+// Give bonus for having max tile in a corner
+GameManager.prototype.calculateCornerBonus = function () {
+  var maxValue = this.getMaxTileValue();
+  var corners = [
+    { x: 0, y: 0 },
+    { x: 0, y: this.size - 1 },
+    { x: this.size - 1, y: 0 },
+    { x: this.size - 1, y: this.size - 1 }
+  ];
+  
+  for (var i = 0; i < corners.length; i++) {
+    var tile = this.grid.cellContent(corners[i]);
+    if (tile && tile.value === maxValue) {
+      return 10000;
+    }
+  }
+  return 0;
+};
+
+// Clone the current game state
+GameManager.prototype.cloneState = function () {
+  return {
+    grid: this.grid.serialize(),
+    score: this.score,
+    over: this.over,
+    won: this.won,
+    turnCount: this.turnCount
+  };
+};
+
+// Restore a game state
+GameManager.prototype.restoreState = function (state) {
+  this.grid = new Grid(state.grid.size, state.grid.cells);
+  this.score = state.score;
+  this.over = state.over;
+  this.won = state.won;
+  this.turnCount = state.turnCount;
+};
+
+// Check if a move is valid and returns the resulting evaluation
+GameManager.prototype.testMove = function (direction) {
+  var originalState = this.cloneState();
+  var moved = this.simulateMove(direction);
+  var scoreGain = this.score - originalState.score;
+  var evaluation = moved ? this.evaluateBoard() : -Infinity;
+  
+  this.restoreState(originalState);
+  
+  return {
+    valid: moved,
+    scoreGain: scoreGain,
+    evaluation: evaluation
+  };
+};
+
+// Simulate a move without updating the display
+GameManager.prototype.simulateMove = function (direction) {
+  var self = this;
+  var cell, tile;
+  var vector = this.getVector(direction);
+  var traversals = this.buildTraversals(vector);
+  var moved = false;
+
+  this.prepareTiles();
+
+  traversals.x.forEach(function (x) {
+    traversals.y.forEach(function (y) {
+      cell = { x: x, y: y };
+      tile = self.grid.cellContent(cell);
+
+      if (tile) {
+        var positions = self.findFarthestPosition(cell, vector);
+        var next = self.grid.cellContent(positions.next);
+
+        if (next && next.value === tile.value && !next.mergedFrom) {
+          var merged = new Tile(positions.next, tile.value * 2);
+          merged.mergedFrom = [tile, next];
+
+          self.grid.insertTile(merged);
+          self.grid.removeTile(tile);
+          tile.updatePosition(positions.next);
+
+          self.score += merged.value;
+          if (merged.value === 2048) self.won = true;
+        } else {
+          self.moveTile(tile, positions.farthest);
+        }
+
+        if (!self.positionsEqual(cell, tile)) {
+          moved = true;
+        }
+      }
+    });
+  });
+
+  if (moved) {
     this.addRandomTile();
   }
 
-  // Refresh display
-  this.actuate();
+  return moved;
+};
+
+// Get the best move using evaluation heuristics
+GameManager.prototype.getBestMove = function () {
+  var bestMove = -1;
+  var bestEvaluation = -Infinity;
+  
+  for (var direction = 0; direction < 4; direction++) {
+    var result = this.testMove(direction);
+    
+    if (result.valid && result.evaluation > bestEvaluation) {
+      bestEvaluation = result.evaluation;
+      bestMove = direction;
+    }
+  }
+  
+  return bestMove;
+};
+
+// Main simulation function - intelligently plays to reach target score
+GameManager.prototype.simulateToScore = function (targetScore) {
+  var self = this;
+  var maxMoves = 20000; // Safety limit
+  var moveCount = 0;
+  var moveDelay = 50; // Delay between moves in milliseconds for visualization
+  
+  console.log('🎮 Starting AI simulation to reach score:', targetScore);
+  console.log('📊 Current score:', this.score);
+  
+  function makeNextMove() {
+    // Check if target reached
+    if (self.score >= targetScore) {
+      console.log('🎉 Target score reached!');
+      console.log('📈 Final score:', self.score);
+      console.log('🔢 Moves taken:', moveCount);
+      console.log('🏆 Max tile achieved:', self.getMaxTileValue());
+      return;
+    }
+    
+    // Check if game is over
+    if (self.isGameTerminated()) {
+      console.log('💀 Game over before reaching target.');
+      console.log('📈 Final score:', self.score);
+      console.log('🎯 Target was:', targetScore);
+      console.log('🔢 Moves taken:', moveCount);
+      console.log('🏆 Max tile achieved:', self.getMaxTileValue());
+      return;
+    }
+    
+    // Safety limit check
+    if (moveCount >= maxMoves) {
+      console.log('⚠️ Safety limit reached.');
+      console.log('📈 Final score:', self.score);
+      console.log('🔢 Moves taken:', moveCount);
+      return;
+    }
+    
+    // Get the best move using AI heuristics
+    var bestMove = self.getBestMove();
+    
+    if (bestMove === -1) {
+      console.log('❌ No valid moves available. Game over.');
+      console.log('📈 Final score:', self.score);
+      return;
+    }
+    
+    // Make the move
+    self.move(bestMove);
+    moveCount++;
+    
+    // Log progress every 10 moves
+    if (moveCount % 10 === 0) {
+      var progress = Math.min(100, (self.score / targetScore) * 100).toFixed(1);
+      console.log('📊 Progress:', progress + '% | Score:', self.score, '| Moves:', moveCount, '| Max Tile:', self.getMaxTileValue());
+    }
+    
+    // Continue with next move
+    setTimeout(makeNextMove, moveDelay);
+  }
+  
+  // Start the simulation
+  makeNextMove();
 };
