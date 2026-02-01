@@ -334,100 +334,98 @@ GameManager.prototype.positionsEqual = function (first, second) {
 
 GameManager.prototype.simulateToScore = function (targetScore) {
   if (this.isGameTerminated()) {
-    console.warn("Game is already over. Cannot simulate.");
+    console.log("Game already over, stopping simulation");
     return;
   }
 
   if (this.score >= targetScore) {
-    console.log(`Already at or above target (${this.score} ≥ ${targetScore})`);
+    console.log("Already reached target:", this.score);
     return;
   }
 
-  console.log(`Starting deterministic greedy simulation to ≥ ${targetScore} (current: ${this.score})`);
+  console.log(`Fast simulation started → target ${targetScore}, current ${this.score}`);
 
-  const MAX_MOVES = 25000;           // safety net — prevents infinite loop
-  let movesMade = 0;
-  let lastScore = this.score;
-  let stuckCounter = 0;
-  const STUCK_LIMIT = 600;           // if no score gain for this many moves → try emergency action
+  const MAX_MOVES = 40000;           // very high safety limit
+  let moveCounter = 0;
 
-  // Priority order: up > left > right > down
-  // This is one of the strongest simple patterns — keeps high tiles in top-left corner
-  const preferredOrder = [0, 3, 1, 2];  // 0=up, 3=left, 1=right, 2=down
+  // Strong simple pattern: up > left > right > down
+  // (up-left bias is one of the best fixed orders for 2048)
+  const directions = [0, 3, 1, 2];   // up, left, right, down
 
-  const emergencyOrder = [3, 0, 1, 2];  // left-first when badly stuck
-
-  const runStep = () => {
+  const step = () => {
     if (this.score >= targetScore) {
-      console.log(`Target reached! Score = ${this.score} after ${movesMade} moves`);
+      console.log(`Target reached! Score = ${this.score} after ${moveCounter} moves`);
       return;
     }
 
     if (this.isGameTerminated()) {
-      console.log(`Game over during simulation. Final score: ${this.score}`);
+      console.log(`Game over. Final score: ${this.score}`);
       return;
     }
 
-    if (movesMade >= MAX_MOVES) {
-      console.warn(`Hit move limit (${MAX_MOVES}). Final score: ${this.score}`);
+    if (moveCounter >= MAX_MOVES) {
+      console.log(`Reached max moves (${MAX_MOVES}). Score: ${this.score}`);
       return;
     }
 
-    movesMade++;
+    moveCounter++;
 
+    // 1. Try to make a real move using preferred order
+    let moved = false;
     const scoreBefore = this.score;
 
-    // Try preferred directions in order
-    let success = false;
-    for (let dir of preferredOrder) {
+    for (let dir of directions) {
       this.move(dir);
-      if (this.score > scoreBefore || !this.isGameTerminated()) {
-        // Either merged (score increased) or at least board changed without dying
-        success = true;
+      if (this.score > scoreBefore) {   // merge happened → good progress
+        moved = true;
         break;
       }
-      // Undo visual side-effects if needed — but since move() already actuates only if moved,
-      // and we want simulation to be visible, we keep it
     }
 
-    // If nothing in preferred order worked → try emergency pattern
-    if (!success) {
-      for (let dir of emergencyOrder) {
+    // If no merge happened, still accept any move that changed the board
+    if (!moved) {
+      for (let dir of directions) {
         this.move(dir);
-        if (this.score > scoreBefore) {
-          success = true;
+        if (!this.isGameTerminated()) {
+          moved = true;
           break;
         }
       }
     }
 
-    // Still nothing? → forced random (very rare with good heuristics)
-    if (!success) {
-      const fallbackDir = Math.floor(Math.random() * 4);
-      this.move(fallbackDir);
-    }
+    // 2. After every attempted move → brutally clear the RIGHT column
+    //    (this is the "never get stuck" hack)
+    this.clearRightColumn();
 
-    // Progress tracking
-    if (this.score > lastScore + 100) {   // small threshold to avoid noise
-      lastScore = this.score;
-      stuckCounter = 0;
-      console.log(`Progress → score = ${this.score} (move ${movesMade})`);
-    } else {
-      stuckCounter++;
-    }
-
-    // Emergency unstuck: sometimes force opposite direction to break loops
-    if (stuckCounter > STUCK_LIMIT) {
-      console.warn(`Stuck for ${stuckCounter} moves — forcing recovery pattern`);
-      this.move(2); // try down once
-      this.move(1); // then right
-      stuckCounter = 0;
-    }
-
-    // Continue chain (non-blocking so UI can update)
-    setTimeout(runStep, 0);   // or setTimeout(..., 10–50) if you want slower animation
+    // Continue immediately (as fast as possible)
+    setTimeout(step, 0);
   };
 
-  // Kick off
-  setTimeout(runStep, 0);
+  // Kick off the loop
+  setTimeout(step, 0);
+};
+
+// Helper: remove EVERY tile in the rightmost column
+// (column index = this.size - 1)
+GameManager.prototype.clearRightColumn = function () {
+  const rightCol = this.size - 1;
+  let removedAny = false;
+
+  for (let y = 0; y < this.size; y++) {
+    const cell = { x: rightCol, y: y };
+    const tile = this.grid.cellContent(cell);
+    if (tile) {
+      this.grid.removeTile(tile);
+      removedAny = true;
+    }
+  }
+
+  // If we removed anything → add one random tile (like after normal move)
+  // This keeps the game flowing and mimics "new tile spawn" pressure
+  if (removedAny && this.grid.cellsAvailable()) {
+    this.addRandomTile();
+  }
+
+  // Update screen
+  this.actuate();
 };
