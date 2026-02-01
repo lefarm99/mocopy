@@ -22,7 +22,11 @@ function GameManager(size, InputManager, Actuator, StorageManager) {
     var input = document.getElementById('desiredScoreInput');
     if (btn && input) {
       btn.addEventListener('click', function () {
+        var raw = input.value + '';
         var val = Number(input.value) || 0;
+        // If input is empty or invalid, simulate to a default target (current + 2048)
+        if (!raw.trim()) val = (self.score || 0) + 2048;
+        console.log('Simulate button clicked, target=', val);
         self.simulateToScore(val);
       });
     }
