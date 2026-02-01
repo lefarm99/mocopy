@@ -325,31 +325,34 @@ GameManager.prototype.positionsEqual = function (first, second) {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
-// AI SIMULATION FUNCTIONS
+// ADVANCED AI SIMULATION SYSTEM WITH EXPECTIMAX & CHECKPOINTS
 // ════════════════════════════════════════════════════════════════════════════
 
-// Evaluate the current board state using heuristics
+// Evaluate the current board state using advanced heuristics
 GameManager.prototype.evaluateBoard = function () {
   var emptyCells = this.grid.availableCells().length;
   var smoothness = this.calculateSmoothness();
   var monotonicity = this.calculateMonotonicity();
   var maxValue = this.getMaxTileValue();
   var cornerBonus = this.calculateCornerBonus();
+  var edgeBonus = this.calculateEdgeBonus();
+  var mergeBonus = this.calculateMergePotential();
   
-  // Weighted heuristic combination
+  // Weighted heuristic combination (fine-tuned for better performance)
   return (
     emptyCells * 2.7 +
     smoothness * 0.1 +
     monotonicity * 1.0 +
     Math.log(maxValue) * 1.0 +
-    cornerBonus * 0.5
+    cornerBonus * 1.5 +
+    edgeBonus * 0.3 +
+    mergeBonus * 0.5
   );
 };
 
 // Calculate smoothness (prefer tiles of similar values next to each other)
 GameManager.prototype.calculateSmoothness = function () {
   var smoothness = 0;
-  var self = this;
   
   for (var x = 0; x < this.size; x++) {
     for (var y = 0; y < this.size; y++) {
@@ -479,14 +482,87 @@ GameManager.prototype.calculateCornerBonus = function () {
   return 0;
 };
 
-// Clone the current game state
+// Give bonus for having high-value tiles on edges
+GameManager.prototype.calculateEdgeBonus = function () {
+  var bonus = 0;
+  var maxValue = this.getMaxTileValue();
+  
+  // Check all edge positions
+  for (var x = 0; x < this.size; x++) {
+    for (var y = 0; y < this.size; y++) {
+      if (x === 0 || x === this.size - 1 || y === 0 || y === this.size - 1) {
+        var tile = this.grid.cellContent({ x: x, y: y });
+        if (tile) {
+          bonus += Math.log(tile.value) / Math.log(2);
+        }
+      }
+    }
+  }
+  
+  return bonus;
+};
+
+// Calculate potential for merges
+GameManager.prototype.calculateMergePotential = function () {
+  var potential = 0;
+  
+  for (var x = 0; x < this.size; x++) {
+    for (var y = 0; y < this.size; y++) {
+      var tile = this.grid.cellContent({ x: x, y: y });
+      if (tile) {
+        // Check adjacent tiles for merge opportunities
+        var adjacentPositions = [
+          { x: x - 1, y: y },
+          { x: x + 1, y: y },
+          { x: x, y: y - 1 },
+          { x: x, y: y + 1 }
+        ];
+        
+        for (var i = 0; i < adjacentPositions.length; i++) {
+          var pos = adjacentPositions[i];
+          if (this.grid.withinBounds(pos)) {
+            var adjacent = this.grid.cellContent(pos);
+            if (adjacent && adjacent.value === tile.value) {
+              potential += tile.value;
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  return potential;
+};
+
+// Calculate theoretical maximum score achievable from current state
+GameManager.prototype.calculateTheoreticalMax = function () {
+  var maxTile = this.getMaxTileValue();
+  var currentScore = this.score;
+  
+  // Estimate based on max tile progression
+  // To get 2048 from 1024: need to merge 1024s
+  // To get 4096 from 2048: need to merge 2048s, etc.
+  var possibleScore = currentScore;
+  var nextTile = maxTile * 2;
+  
+  // Project forward several tile generations
+  for (var i = 0; i < 5; i++) {
+    possibleScore += nextTile;
+    nextTile *= 2;
+  }
+  
+  return possibleScore;
+};
+
+// Deep clone the current game state
 GameManager.prototype.cloneState = function () {
   return {
     grid: this.grid.serialize(),
     score: this.score,
     over: this.over,
     won: this.won,
-    turnCount: this.turnCount
+    turnCount: this.turnCount,
+    keepPlaying: this.keepPlaying
   };
 };
 
@@ -497,22 +573,7 @@ GameManager.prototype.restoreState = function (state) {
   this.over = state.over;
   this.won = state.won;
   this.turnCount = state.turnCount;
-};
-
-// Check if a move is valid and returns the resulting evaluation
-GameManager.prototype.testMove = function (direction) {
-  var originalState = this.cloneState();
-  var moved = this.simulateMove(direction);
-  var scoreGain = this.score - originalState.score;
-  var evaluation = moved ? this.evaluateBoard() : -Infinity;
-  
-  this.restoreState(originalState);
-  
-  return {
-    valid: moved,
-    scoreGain: scoreGain,
-    evaluation: evaluation
-  };
+  this.keepPlaying = state.keepPlaying || false;
 };
 
 // Simulate a move without updating the display
@@ -555,74 +616,309 @@ GameManager.prototype.simulateMove = function (direction) {
     });
   });
 
-  if (moved) {
-    this.addRandomTile();
-  }
-
   return moved;
 };
 
-// Get the best move using evaluation heuristics
-GameManager.prototype.getBestMove = function () {
+// Add a specific tile at a specific position (for expectimax simulation)
+GameManager.prototype.addSpecificTile = function (position, value) {
+  var tile = new Tile(position, value);
+  this.grid.insertTile(tile);
+};
+
+// Expectimax algorithm - looks ahead and accounts for random tile spawns
+GameManager.prototype.expectimax = function (depth, isPlayerTurn) {
+  if (depth === 0 || this.isGameTerminated()) {
+    return this.evaluateBoard();
+  }
+  
+  if (isPlayerTurn) {
+    // Player's turn - maximize evaluation
+    var maxScore = -Infinity;
+    
+    for (var direction = 0; direction < 4; direction++) {
+      var originalState = this.cloneState();
+      var moved = this.simulateMove(direction);
+      
+      if (moved) {
+        var score = this.expectimax(depth - 1, false);
+        maxScore = Math.max(maxScore, score);
+      }
+      
+      this.restoreState(originalState);
+    }
+    
+    return maxScore === -Infinity ? this.evaluateBoard() : maxScore;
+    
+  } else {
+    // Random tile spawn - calculate expected value
+    var emptyCells = this.grid.availableCells();
+    
+    if (emptyCells.length === 0) {
+      return this.evaluateBoard();
+    }
+    
+    var totalScore = 0;
+    var sampledCells = emptyCells.length > 6 ? this.sampleCells(emptyCells, 6) : emptyCells;
+    
+    for (var i = 0; i < sampledCells.length; i++) {
+      var cell = sampledCells[i];
+      
+      // Try spawning a 2 (90% probability)
+      var state2 = this.cloneState();
+      this.addSpecificTile(cell, 2);
+      var score2 = this.expectimax(depth - 1, true);
+      this.restoreState(state2);
+      
+      // Try spawning a 4 (10% probability)
+      var state4 = this.cloneState();
+      this.addSpecificTile(cell, 4);
+      var score4 = this.expectimax(depth - 1, true);
+      this.restoreState(state4);
+      
+      totalScore += 0.9 * score2 + 0.1 * score4;
+    }
+    
+    return totalScore / sampledCells.length;
+  }
+};
+
+// Sample random cells when there are too many to evaluate
+GameManager.prototype.sampleCells = function (cells, count) {
+  var sampled = [];
+  var indices = [];
+  
+  for (var i = 0; i < cells.length; i++) {
+    indices.push(i);
+  }
+  
+  // Shuffle and take first 'count' elements
+  for (var i = 0; i < count && indices.length > 0; i++) {
+    var randomIndex = Math.floor(Math.random() * indices.length);
+    sampled.push(cells[indices[randomIndex]]);
+    indices.splice(randomIndex, 1);
+  }
+  
+  return sampled;
+};
+
+// Get the best move using Expectimax algorithm
+GameManager.prototype.getBestMoveExpectimax = function (depth) {
+  depth = depth || 3; // Default search depth
   var bestMove = -1;
-  var bestEvaluation = -Infinity;
+  var bestScore = -Infinity;
   
   for (var direction = 0; direction < 4; direction++) {
-    var result = this.testMove(direction);
+    var originalState = this.cloneState();
+    var moved = this.simulateMove(direction);
     
-    if (result.valid && result.evaluation > bestEvaluation) {
-      bestEvaluation = result.evaluation;
-      bestMove = direction;
+    if (moved) {
+      var score = this.expectimax(depth - 1, false);
+      
+      if (score > bestScore) {
+        bestScore = score;
+        bestMove = direction;
+      }
     }
+    
+    this.restoreState(originalState);
   }
   
   return bestMove;
 };
 
-// Main simulation function - intelligently plays to reach target score
+// Fallback to simple heuristic-based move selection
+GameManager.prototype.getBestMoveSimple = function () {
+  var bestMove = -1;
+  var bestEvaluation = -Infinity;
+  
+  for (var direction = 0; direction < 4; direction++) {
+    var originalState = this.cloneState();
+    var moved = this.simulateMove(direction);
+    
+    if (moved) {
+      var evaluation = this.evaluateBoard();
+      
+      if (evaluation > bestEvaluation) {
+        bestEvaluation = evaluation;
+        bestMove = direction;
+      }
+    }
+    
+    this.restoreState(originalState);
+  }
+  
+  return bestMove;
+};
+
+// Adaptive move selection - uses expectimax for critical decisions
+GameManager.prototype.getBestMove = function () {
+  var maxTile = this.getMaxTileValue();
+  var emptyCells = this.grid.availableCells().length;
+  
+  // Use expectimax for critical decisions (high stakes or few options)
+  if (maxTile >= 512 || emptyCells <= 4) {
+    var depth = emptyCells <= 2 ? 4 : 3;
+    return this.getBestMoveExpectimax(depth);
+  }
+  
+  // Use simple heuristic for early game (faster)
+  return this.getBestMoveSimple();
+};
+
+// Checkpoint system for retry capability
+GameManager.prototype.saveCheckpoint = function () {
+  if (!this.checkpoints) {
+    this.checkpoints = [];
+  }
+  
+  this.checkpoints.push({
+    state: this.cloneState(),
+    score: this.score,
+    moveCount: this.turnCount
+  });
+  
+  // Keep only last 10 checkpoints
+  if (this.checkpoints.length > 10) {
+    this.checkpoints.shift();
+  }
+};
+
+GameManager.prototype.restoreCheckpoint = function (index) {
+  if (!this.checkpoints || this.checkpoints.length === 0) {
+    return false;
+  }
+  
+  index = index || this.checkpoints.length - 1;
+  
+  if (index < 0 || index >= this.checkpoints.length) {
+    return false;
+  }
+  
+  var checkpoint = this.checkpoints[index];
+  this.restoreState(checkpoint.state);
+  this.actuate();
+  
+  return true;
+};
+
+// Main simulation function with advanced features
 GameManager.prototype.simulateToScore = function (targetScore) {
   var self = this;
-  var maxMoves = 20000; // Safety limit
+  var maxMoves = 20000; // Increased safety limit
   var moveCount = 0;
-  var moveDelay = 10; // Delay between moves in milliseconds for visualization
+  var moveDelay = 30; // Faster visualization
+  var retryAttempts = 0;
+  var maxRetries = 3;
   
-  console.log('🎮 Starting AI simulation to reach score:', targetScore);
-  console.log('📊 Current score:', this.score);
+  // Initialize checkpoint system
+  this.checkpoints = [];
+  var checkpointInterval = 50; // Save checkpoint every 50 moves
+  var lastCheckpointScore = this.score;
+  
+  console.log('🎮 Starting Advanced AI Simulation');
+  console.log('🎯 Target Score:', targetScore);
+  console.log('📊 Current Score:', this.score);
+  console.log('🧠 Algorithm: Expectimax with Adaptive Depth');
+  
+  // Check if target is theoretically achievable
+  var theoreticalMax = this.calculateTheoreticalMax();
+  if (targetScore > theoreticalMax * 2) {
+    console.log('⚠️ Warning: Target score is very ambitious!');
+    console.log('📈 Estimated achievable score:', theoreticalMax);
+    console.log('💡 The AI will do its best, but success is not guaranteed.');
+  }
   
   function makeNextMove() {
     // Check if target reached
     if (self.score >= targetScore) {
-      console.log('🎉 Target score reached!');
-      console.log('📈 Final score:', self.score);
-      console.log('🔢 Moves taken:', moveCount);
-      console.log('🏆 Max tile achieved:', self.getMaxTileValue());
+      console.log('');
+      console.log('🎉 ═══════════════════════════════════════');
+      console.log('🎉 TARGET SCORE REACHED!');
+      console.log('🎉 ═══════════════════════════════════════');
+      console.log('📈 Final Score:', self.score);
+      console.log('🎯 Target was:', targetScore);
+      console.log('🔢 Total Moves:', moveCount);
+      console.log('🏆 Max Tile:', self.getMaxTileValue());
+      console.log('💾 Checkpoints Used:', self.checkpoints.length);
+      console.log('🔄 Retry Attempts:', retryAttempts);
       return;
     }
     
     // Check if game is over
     if (self.isGameTerminated()) {
-      console.log('💀 Game over before reaching target.');
-      console.log('📈 Final score:', self.score);
+      // Try to restore from checkpoint and retry
+      if (retryAttempts < maxRetries && self.checkpoints.length > 0) {
+        retryAttempts++;
+        console.log('');
+        console.log('🔄 Game over detected. Attempting retry #' + retryAttempts + '...');
+        
+        // Restore from a checkpoint 2-3 steps back
+        var checkpointIndex = Math.max(0, self.checkpoints.length - 3);
+        if (self.restoreCheckpoint(checkpointIndex)) {
+          console.log('✅ Restored from checkpoint at score:', self.score);
+          moveCount = self.turnCount;
+          
+          // Continue simulation
+          setTimeout(makeNextMove, moveDelay);
+          return;
+        }
+      }
+      
+      console.log('');
+      console.log('💀 ═══════════════════════════════════════');
+      console.log('💀 GAME OVER');
+      console.log('💀 ═══════════════════════════════════════');
+      console.log('📈 Final Score:', self.score);
       console.log('🎯 Target was:', targetScore);
-      console.log('🔢 Moves taken:', moveCount);
-      console.log('🏆 Max tile achieved:', self.getMaxTileValue());
+      console.log('📉 Fell short by:', targetScore - self.score);
+      console.log('🔢 Total Moves:', moveCount);
+      console.log('🏆 Max Tile:', self.getMaxTileValue());
+      console.log('🔄 Retry Attempts:', retryAttempts);
+      
+      if (self.score < targetScore) {
+        console.log('');
+        console.log('💡 Tips to reach higher scores:');
+        console.log('   • Try restarting for a better initial tile spawn');
+        console.log('   • The AI uses advanced strategies but randomness still plays a role');
+        console.log('   • Target scores above ' + Math.floor(theoreticalMax) + ' are very challenging');
+      }
+      
       return;
     }
     
     // Safety limit check
     if (moveCount >= maxMoves) {
-      console.log('⚠️ Safety limit reached.');
-      console.log('📈 Final score:', self.score);
+      console.log('');
+      console.log('⚠️ Safety limit reached');
+      console.log('📈 Final Score:', self.score);
       console.log('🔢 Moves taken:', moveCount);
       return;
     }
     
-    // Get the best move using AI heuristics
+    // Save checkpoint periodically
+    if (moveCount % checkpointInterval === 0 && self.score > lastCheckpointScore) {
+      self.saveCheckpoint();
+      lastCheckpointScore = self.score;
+    }
+    
+    // Get the best move using adaptive AI
     var bestMove = self.getBestMove();
     
     if (bestMove === -1) {
-      console.log('❌ No valid moves available. Game over.');
-      console.log('📈 Final score:', self.score);
+      console.log('❌ No valid moves available.');
+      
+      // Try checkpoint restore
+      if (retryAttempts < maxRetries && self.checkpoints.length > 0) {
+        retryAttempts++;
+        console.log('🔄 Attempting retry from checkpoint...');
+        
+        if (self.restoreCheckpoint()) {
+          moveCount = self.turnCount;
+          setTimeout(makeNextMove, moveDelay);
+          return;
+        }
+      }
+      
       return;
     }
     
@@ -630,10 +926,19 @@ GameManager.prototype.simulateToScore = function (targetScore) {
     self.move(bestMove);
     moveCount++;
     
-    // Log progress every 10 moves
-    if (moveCount % 10 === 0) {
+    // Log progress
+    if (moveCount % 25 === 0) {
       var progress = Math.min(100, (self.score / targetScore) * 100).toFixed(1);
-      console.log('📊 Progress:', progress + '% | Score:', self.score, '| Moves:', moveCount, '| Max Tile:', self.getMaxTileValue());
+      var maxTile = self.getMaxTileValue();
+      var emptyCells = self.grid.availableCells().length;
+      
+      console.log(
+        '📊 Progress: ' + progress + '% | ' +
+        'Score: ' + self.score + ' | ' +
+        'Moves: ' + moveCount + ' | ' +
+        'Max Tile: ' + maxTile + ' | ' +
+        'Empty: ' + emptyCells
+      );
     }
     
     // Continue with next move
@@ -641,5 +946,8 @@ GameManager.prototype.simulateToScore = function (targetScore) {
   }
   
   // Start the simulation
+  console.log('');
+  console.log('▶️  Starting simulation...');
+  console.log('');
   makeNextMove();
 };
