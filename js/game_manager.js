@@ -335,27 +335,100 @@ GameManager.prototype.simulateToScore = function (targetScore, options) {
 
   var dirs = [0, 1, 2, 3];
 
+  // Simulate a single move on a cloned grid and return score gain and moved flag
+  var simulateMoveOnGrid = function (grid, direction) {
+    var vector = self.getVector(direction);
+    var traversals = self.buildTraversals(vector);
+    var moved = false;
+    var scoreGain = 0;
+
+    // Prepare tiles: clear mergedFrom and ensure positions are saved
+    grid.eachCell(function (x, y, tile) {
+      if (tile) {
+        tile.mergedFrom = null;
+        tile.savePosition && tile.savePosition();
+      }
+    });
+
+    traversals.x.forEach(function (x) {
+      traversals.y.forEach(function (y) {
+        var cell = { x: x, y: y };
+        var tile = grid.cellContent(cell);
+
+        if (tile) {
+          // find farthest
+          var previous;
+          var nextCell = cell;
+          do {
+            previous = nextCell;
+            nextCell = { x: previous.x + vector.x, y: previous.y + vector.y };
+          } while (grid.withinBounds(nextCell) && grid.cellAvailable(nextCell));
+
+          var positions = { farthest: previous, next: nextCell };
+          var next = grid.cellContent(positions.next);
+
+          if (next && next.value === tile.value && !next.mergedFrom) {
+            var merged = new Tile(positions.next, tile.value * 2);
+            merged.mergedFrom = [tile, next];
+
+            grid.insertTile(merged);
+            grid.removeTile(tile);
+
+            tile.updatePosition && tile.updatePosition(positions.next);
+
+            scoreGain += merged.value;
+          } else {
+            // move tile to farthest
+            grid.removeTile(tile);
+            tile.x = positions.farthest.x; tile.y = positions.farthest.y;
+            grid.insertTile(tile);
+          }
+
+          if (!(cell.x === tile.x && cell.y === tile.y)) {
+            moved = true;
+          }
+        }
+      });
+    });
+
+    return { moved: moved, scoreGain: scoreGain, grid: grid };
+  };
+
   var step = function () {
     if (self.score >= targetScore || self.over || moves >= maxMoves) {
       console.log('Simulation finished. score=', self.score, 'moves=', moves);
       return;
     }
 
-    // Simple heuristic: bias towards right and down but allow randomness
-    var r = Math.random();
-    var dir;
-    if (r < 0.45) dir = 1; // right
-    else if (r < 0.8) dir = 2; // down
-    else dir = dirs[Math.floor(Math.random() * dirs.length)];
+    // Evaluate each direction by simulating on a cloned grid and choose best immediate score gain
+    var best = { dir: -1, gain: -1, moved: false };
+    for (var i = 0; i < dirs.length; i++) {
+      var d = dirs[i];
+      // Clone current grid
+      var cloned = new Grid(self.size, self.grid.serialize().cells);
+      var out = simulateMoveOnGrid(cloned, d);
+      if (out.moved) {
+        if (out.scoreGain > best.gain || (out.scoreGain === best.gain && out.moved && !best.moved)) {
+          best = { dir: d, gain: out.scoreGain, moved: out.moved };
+        }
+      }
+    }
 
+    // If no move results in movement, stop
+    if (best.dir === -1) {
+      console.log('No valid moves available. Ending simulation.');
+      return;
+    }
+
+    // Apply the best move to the real game
     try {
-      self.move(dir);
+      self.move(best.dir);
     } catch (e) {
-      console.log(e);
+      console.log('Error applying move', e);
     }
 
     moves++;
-    // yield to the browser so UI updates; 0ms keeps it responsive
+    // slight delay so UI updates remain smooth
     setTimeout(step, 0);
   };
 
