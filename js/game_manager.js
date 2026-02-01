@@ -332,100 +332,120 @@ GameManager.prototype.positionsEqual = function (first, second) {
 
 // Add/replace inside GameManager
 
+// Replace / add this new function in GameManager
+// (remove / comment out any previous simulateToScore)
+
 GameManager.prototype.simulateToScore = function (targetScore) {
   if (this.isGameTerminated()) {
-    console.log("Game already over, stopping simulation");
+    console.warn("Cannot simulate: game is already over");
     return;
   }
 
   if (this.score >= targetScore) {
-    console.log("Already reached target:", this.score);
+    console.log(`Score already sufficient: ${this.score} ≥ ${targetScore}`);
     return;
   }
 
-  console.log(`Fast simulation started → target ${targetScore}, current ${this.score}`);
+  console.log(`Fast safe simulation → target ≥ ${targetScore}  (current ${this.score})`);
 
-  const MAX_MOVES = 40000;           // very high safety limit
-  let moveCounter = 0;
+  const MAX_MOVES = 80000;           // hard safety (should never hit)
+  let moves = 0;
 
-  // Strong simple pattern: up > left > right > down
-  // (up-left bias is one of the best fixed orders for 2048)
-  const directions = [0, 3, 1, 2];   // up, left, right, down
+  // Very strong simple pattern for 2048: up > left > right > down
+  const dirPriority = [0, 3, 1, 2];   // 0=up, 3=left, 1=right, 2=down
 
   const step = () => {
+    // Stop conditions
     if (this.score >= targetScore) {
-      console.log(`Target reached! Score = ${this.score} after ${moveCounter} moves`);
+      console.log(`SUCCESS — reached ${this.score} after ${moves} moves`);
       return;
     }
 
-    if (this.isGameTerminated()) {
-      console.log(`Game over. Final score: ${this.score}`);
+    if (moves >= MAX_MOVES) {
+      console.warn(`Stopped: max moves reached. Score = ${this.score}`);
       return;
     }
 
-    if (moveCounter >= MAX_MOVES) {
-      console.log(`Reached max moves (${MAX_MOVES}). Score: ${this.score}`);
-      return;
-    }
+    moves++;
 
-    moveCounter++;
-
-    // 1. Try to make a real move using preferred order
-    let moved = false;
+    // ── Phase 1: try to make a useful move ────────────────────────────────
+    let didMerge = false;
     const scoreBefore = this.score;
 
-    for (let dir of directions) {
+    for (let dir of dirPriority) {
       this.move(dir);
-      if (this.score > scoreBefore) {   // merge happened → good progress
-        moved = true;
+      if (this.score > scoreBefore) {
+        didMerge = true;
         break;
       }
     }
 
-    // If no merge happened, still accept any move that changed the board
-    if (!moved) {
-      for (let dir of directions) {
+    // If no merge → accept any non-losing move
+    if (!didMerge) {
+      for (let dir of dirPriority) {
+        const beforeOver = this.over;
         this.move(dir);
-        if (!this.isGameTerminated()) {
-          moved = true;
+        if (!this.over && !this.isGameTerminated()) {
           break;
         }
+        this.over = beforeOver; // rollback worst case (rare)
       }
     }
 
-    // 2. After every attempted move → brutally clear the RIGHT column
-    //    (this is the "never get stuck" hack)
-    this.clearRightColumn();
+    // ── Phase 2: emergency clear to guarantee we never fill up ─────────────
+    this.preventBoardFill();
 
-    // Continue immediately (as fast as possible)
+    // Continue as fast as possible
     setTimeout(step, 0);
+    // For slower / watchable version use: setTimeout(step, 8);   // ~120 fps
   };
 
-  // Kick off the loop
   setTimeout(step, 0);
 };
 
-// Helper: remove EVERY tile in the rightmost column
-// (column index = this.size - 1)
-GameManager.prototype.clearRightColumn = function () {
-  const rightCol = this.size - 1;
-  let removedAny = false;
 
+// Helper: keep at least ~4–6 empty cells at all times by removing blocking tiles
+GameManager.prototype.preventBoardFill = function () {
+  const minEmpty = 5;               // tune: 4–8 works well
+  let emptyCount = this.grid.availableCells().length;
+
+  if (emptyCount >= minEmpty) return;
+
+  // Remove tiles from highest-risk positions first (right column + bottom row)
+  const dangerousCells = [];
+
+  // Right column
+  const right = this.size - 1;
   for (let y = 0; y < this.size; y++) {
-    const cell = { x: rightCol, y: y };
+    dangerousCells.push({x: right, y});
+  }
+
+  // Bottom row (except the bottom-right corner already included)
+  const bottom = this.size - 1;
+  for (let x = 0; x < right; x++) {
+    dangerousCells.push({x, y: bottom});
+  }
+
+  // Shuffle a bit so we don't always clear the same spots
+  dangerousCells.sort(() => Math.random() - 0.5);
+
+  let toRemove = minEmpty - emptyCount + 1;   // remove a few extra for safety
+
+  for (let cell of dangerousCells) {
+    if (toRemove <= 0) break;
     const tile = this.grid.cellContent(cell);
     if (tile) {
       this.grid.removeTile(tile);
-      removedAny = true;
+      toRemove--;
+      emptyCount++;
     }
   }
 
-  // If we removed anything → add one random tile (like after normal move)
-  // This keeps the game flowing and mimics "new tile spawn" pressure
-  if (removedAny && this.grid.cellsAvailable()) {
+  // After forced removals → spawn new tiles (like normal game)
+  while (this.grid.cellsAvailable() && Math.random() < 0.7) {   // spawn 0–2 tiles
     this.addRandomTile();
   }
 
-  // Update screen
+  // Refresh display
   this.actuate();
 };
