@@ -325,7 +325,9 @@ GameManager.prototype.tileMatchesAvailable = function () {
 // Simulate random moves until a target score is reached or safety limit hit
 // Add near the top of GameManager (or inside simulateToScore)
 
-
+GameManager.prototype.positionsEqual = function (first, second) {
+  return first.x === second.x && first.y === second.y;
+};
 // ────────────────────────────────────────────────
 
 // Add/replace inside GameManager
