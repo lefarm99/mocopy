@@ -347,7 +347,7 @@ GameManager.prototype.simulateToScore = function (targetScore, options) {
     try {
       self.move(dir);
     } catch (e) {
-      console.log(e)l
+      console.log(e);
     }
 
     moves++;
