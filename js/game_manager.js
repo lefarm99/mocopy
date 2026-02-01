@@ -320,123 +320,112 @@ GameManager.prototype.tileMatchesAvailable = function () {
   return false;
 };
 
-GameManager.prototype.positionsEqual = function (first, second) {
-  return first.x === second.x && first.y === second.y;
-};
+
 
 // Simulate random moves until a target score is reached or safety limit hit
 // Add near the top of GameManager (or inside simulateToScore)
-GameManager.prototype.removeRandomLowTiles = function (count = 1) {
-  const candidates = [];
-  
-  this.grid.eachCell((x, y, tile) => {
-    if (tile && tile.value <= 16) {   // only touch small tiles
-      candidates.push({x, y, tile});
-    }
-  });
 
-  if (candidates.length === 0) return false;
-
-  // Shuffle and take up to `count`
-  for (let i = candidates.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
-  }
-
-  const removed = Math.min(count, candidates.length);
-  
-  for (let i = 0; i < removed; i++) {
-    const {x, y} = candidates[i];
-    this.grid.removeTile(this.grid.cellContent({x, y}));
-  }
-
-  console.log(`[rescue] Removed ${removed} small tile(s) to escape deadlock`);
-  return removed > 0;
-};
 
 // ────────────────────────────────────────────────
 
-GameManager.prototype.simulateToScore = function (targetScore, options = {}) {
-  const self = this;
-  targetScore = Number(targetScore) || 0;
-  
-  if (targetScore <= this.score) return;
+// Add/replace inside GameManager
 
-  const maxMoves        = options.maxMoves        ?? 25000;
-  const maxRescues      = options.maxRescues      ?? 6;       // how many times we allow rescue
-  const tilesToRemove   = options.tilesToRemove   ?? 2;       // how many tiles per rescue
-  const rescueAfterStuckCount = options.rescueAfterStuckCount ?? 3;  // require N consecutive no-move before rescue
+GameManager.prototype.simulateToScore = function (targetScore) {
+  if (this.isGameTerminated()) {
+    console.warn("Game is already over. Cannot simulate.");
+    return;
+  }
 
-  let moves = 0;
-  let rescuesUsed = 0;
-  let consecutiveNoMove = 0;
+  if (this.score >= targetScore) {
+    console.log(`Already at or above target (${this.score} ≥ ${targetScore})`);
+    return;
+  }
 
-  const dirs = [0, 1, 2, 3];
+  console.log(`Starting deterministic greedy simulation to ≥ ${targetScore} (current: ${this.score})`);
 
-  const simulateMoveOnGrid = function (grid, direction) {
-    // ── same implementation as you had ──
-    // (I'm omitting it here for brevity — keep your version)
-    // returns { moved: boolean, scoreGain: number, grid: Grid }
-  };
+  const MAX_MOVES = 25000;           // safety net — prevents infinite loop
+  let movesMade = 0;
+  let lastScore = this.score;
+  let stuckCounter = 0;
+  const STUCK_LIMIT = 600;           // if no score gain for this many moves → try emergency action
 
-  const step = function () {
-    if (self.score >= targetScore || self.over || moves >= maxMoves) {
-      console.log(`Simulation finished. score=${self.score}  moves=${moves}  rescues=${rescuesUsed}`);
+  // Priority order: up > left > right > down
+  // This is one of the strongest simple patterns — keeps high tiles in top-left corner
+  const preferredOrder = [0, 3, 1, 2];  // 0=up, 3=left, 1=right, 2=down
+
+  const emergencyOrder = [3, 0, 1, 2];  // left-first when badly stuck
+
+  const runStep = () => {
+    if (this.score >= targetScore) {
+      console.log(`Target reached! Score = ${this.score} after ${movesMade} moves`);
       return;
     }
 
-    // ── Try to find best move ───────────────────────────────────
-    let best = { dir: -1, gain: -1, moved: false };
+    if (this.isGameTerminated()) {
+      console.log(`Game over during simulation. Final score: ${this.score}`);
+      return;
+    }
 
-    for (let d of dirs) {
-      const cloned = new Grid(self.size, self.grid.serialize().cells);
-      const out = simulateMoveOnGrid(cloned, d);
-      if (out.moved && out.scoreGain >= 0) {
-        if (out.scoreGain > best.gain || 
-            (out.scoreGain === best.gain && out.moved && !best.moved)) {
-          best = { dir: d, gain: out.scoreGain, moved: out.moved };
+    if (movesMade >= MAX_MOVES) {
+      console.warn(`Hit move limit (${MAX_MOVES}). Final score: ${this.score}`);
+      return;
+    }
+
+    movesMade++;
+
+    const scoreBefore = this.score;
+
+    // Try preferred directions in order
+    let success = false;
+    for (let dir of preferredOrder) {
+      this.move(dir);
+      if (this.score > scoreBefore || !this.isGameTerminated()) {
+        // Either merged (score increased) or at least board changed without dying
+        success = true;
+        break;
+      }
+      // Undo visual side-effects if needed — but since move() already actuates only if moved,
+      // and we want simulation to be visible, we keep it
+    }
+
+    // If nothing in preferred order worked → try emergency pattern
+    if (!success) {
+      for (let dir of emergencyOrder) {
+        this.move(dir);
+        if (this.score > scoreBefore) {
+          success = true;
+          break;
         }
       }
     }
 
-    let didMove = false;
-
-    if (best.dir !== -1) {
-      // Normal move
-      self.move(best.dir);
-      didMove = true;
-      consecutiveNoMove = 0;
-    } 
-    else {
-      // No move possible — deadlock
-      consecutiveNoMove++;
-
-      if (consecutiveNoMove >= rescueAfterStuckCount && rescuesUsed < maxRescues) {
-        const rescued = self.removeRandomLowTiles(tilesToRemove);
-        if (rescued) {
-          rescuesUsed++;
-          consecutiveNoMove = 0;   // reset counter
-          self.actuate();          // update UI
-          console.log(`Rescue #${rescuesUsed}/${maxRescues} — continuing...`);
-        } else {
-          console.log("No low-value tiles left to remove → giving up");
-          return;
-        }
-      } 
-      else if (consecutiveNoMove >= rescueAfterStuckCount) {
-        console.log("Max rescues reached or no more rescue possible → stopping");
-        return;
-      } 
-      else {
-        console.log(`No move (stuck counter = ${consecutiveNoMove}/${rescueAfterStuckCount})`);
-      }
+    // Still nothing? → forced random (very rare with good heuristics)
+    if (!success) {
+      const fallbackDir = Math.floor(Math.random() * 4);
+      this.move(fallbackDir);
     }
 
-    if (didMove || rescuesUsed > 0) {   // still try to continue after rescue
-      moves++;
-      setTimeout(step, 0);   // or 1–8 ms if you want slower animation
+    // Progress tracking
+    if (this.score > lastScore + 100) {   // small threshold to avoid noise
+      lastScore = this.score;
+      stuckCounter = 0;
+      console.log(`Progress → score = ${this.score} (move ${movesMade})`);
+    } else {
+      stuckCounter++;
     }
+
+    // Emergency unstuck: sometimes force opposite direction to break loops
+    if (stuckCounter > STUCK_LIMIT) {
+      console.warn(`Stuck for ${stuckCounter} moves — forcing recovery pattern`);
+      this.move(2); // try down once
+      this.move(1); // then right
+      stuckCounter = 0;
+    }
+
+    // Continue chain (non-blocking so UI can update)
+    setTimeout(runStep, 0);   // or setTimeout(..., 10–50) if you want slower animation
   };
 
-  step();
+  // Kick off
+  setTimeout(runStep, 0);
 };
