@@ -12,6 +12,23 @@ function GameManager(size, InputManager, Actuator, StorageManager) {
   this.inputManager.on("keepPlaying", this.keepPlaying.bind(this));
 
   this.setup();
+  // Expose the current game manager for external control (simulator/button)
+  window.currentGameManager = this;
+
+  // Hook up simulate button if present
+  try {
+    var self = this;
+    var btn = document.getElementById('simulateButton');
+    var input = document.getElementById('desiredScoreInput');
+    if (btn && input) {
+      btn.addEventListener('click', function () {
+        var val = Number(input.value) || 0;
+        self.simulateToScore(val);
+      });
+    }
+  } catch (e) {
+    // ignore DOM errors when running in non-browser environments
+  }
 }
 
 // Restart the game
@@ -301,4 +318,42 @@ GameManager.prototype.tileMatchesAvailable = function () {
 
 GameManager.prototype.positionsEqual = function (first, second) {
   return first.x === second.x && first.y === second.y;
+};
+
+// Simulate random moves until a target score is reached or safety limit hit
+GameManager.prototype.simulateToScore = function (targetScore, options) {
+  var self = this;
+  targetScore = Number(targetScore) || 0;
+  var maxMoves = (options && options.maxMoves) || 10000;
+  var moves = 0;
+
+  if (targetScore <= this.score) return;
+
+  var dirs = [0, 1, 2, 3];
+
+  var step = function () {
+    if (self.score >= targetScore || self.over || moves >= maxMoves) {
+      console.log('Simulation finished. score=', self.score, 'moves=', moves);
+      return;
+    }
+
+    // Simple heuristic: bias towards right and down but allow randomness
+    var r = Math.random();
+    var dir;
+    if (r < 0.45) dir = 1; // right
+    else if (r < 0.8) dir = 2; // down
+    else dir = dirs[Math.floor(Math.random() * dirs.length)];
+
+    try {
+      self.move(dir);
+    } catch (e) {
+      // If a move throws for any reason, just continue
+    }
+
+    moves++;
+    // yield to the browser so UI updates; 0ms keeps it responsive
+    setTimeout(step, 0);
+  };
+
+  step();
 };
