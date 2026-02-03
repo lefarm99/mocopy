@@ -76,6 +76,8 @@ LeaderboardManager.prototype.submitScore = function (name, score, turns, gameSta
   }
   this.recentSubmissions[name].push(Date.now());
 
+  console.log(name, score, turns, grid.length, grids.length, timeStamps.length, scoreStamps.length);
+  
   request = fetch(this.scriptUrl, {
     method: 'POST',
     mode: 'no-cors', // Required for Google Apps Script
